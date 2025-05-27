@@ -11,6 +11,7 @@ import {
   Home,
   Database,
   Building,
+  Users,
 } from "lucide-react";
 import { Toaster } from "react-hot-toast";
 
@@ -87,6 +88,13 @@ export default function DashboardLayout({ children }) {
             >
               <Settings className="h-5 w-5 mr-3" />
               User Management
+            </Link>
+            <Link
+              href="/user-analytics"
+              className="flex items-center px-4 py-2 text-gray-700 rounded-md hover:bg-gray-100"
+            >
+              <Users className="h-5 w-5 mr-3" />
+              User Analytics
             </Link>
             {/* <Link
               href="/analytics"

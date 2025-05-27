@@ -30,6 +30,7 @@ import {
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/clientApp";
 import { toast } from "react-hot-toast";
+import { recordUserInteraction } from "../firebase/userAnalyticsTracker";
 
 // Pipeline status options & styling
 const PIPELINE_STATUSES_CONFIG = {
@@ -245,8 +246,22 @@ export default function UserBusinessTable({
         throw new Error("Business not found");
       }
 
+      const previousStatus = business.pipeline_status || "Not Contacted";
+
       await updateDoc(doc(db, "businesses", businessId), {
         pipeline_status: status,
+      });
+
+      // Track user analytics
+      await recordUserInteraction({
+        userId: user.id,
+        businessId,
+        businessName: business.name,
+        category: business.category,
+        city: business.city,
+        actionType: "status_change",
+        previousStatus,
+        newStatus: status,
       });
 
       business.pipeline_status = status;
@@ -274,6 +289,17 @@ export default function UserBusinessTable({
       }
 
       await updateDoc(doc(db, "businesses", editingNotes), {
+        notes: noteText,
+      });
+
+      // Track user analytics for notes update
+      await recordUserInteraction({
+        userId: user.id,
+        businessId: editingNotes,
+        businessName: business.name,
+        category: business.category,
+        city: business.city,
+        actionType: "notes_update",
         notes: noteText,
       });
 
