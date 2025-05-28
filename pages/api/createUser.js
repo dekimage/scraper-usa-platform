@@ -6,7 +6,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { id, name, email, password } = req.body;
+  const { id, name, email, password, webCloser } = req.body;
 
   if (!id || !password) {
     return res.status(400).json({ error: "User ID and password are required" });
@@ -32,6 +32,12 @@ export default async function handler(req, res) {
       createdAt: new Date(),
       lastUpdated: new Date(),
     };
+
+    // Add webCloser field if specified
+    if (webCloser) {
+      userData.webCloser = true;
+      userData.receivedLeads = {}; // Initialize empty received leads map
+    }
 
     await setDoc(userDocRef, userData);
 

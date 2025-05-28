@@ -14,6 +14,7 @@ export default function AdminPage() {
     name: "",
     email: "",
     password: "",
+    webCloser: false,
   });
   const [creating, setCreating] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -96,7 +97,13 @@ export default function AdminPage() {
       if (response.ok) {
         toast.success("User created successfully", { id: toastId });
         setShowCreateModal(false);
-        setNewUser({ id: "", name: "", email: "", password: "" });
+        setNewUser({
+          id: "",
+          name: "",
+          email: "",
+          password: "",
+          webCloser: false,
+        });
         fetchUsers(); // Refresh the list
       } else {
         toast.error(data.error || "Failed to create user", { id: toastId });
@@ -184,6 +191,11 @@ export default function AdminPage() {
                       <div>
                         <h3 className="font-medium text-gray-900">
                           {user.name || user.id}
+                          {user.webCloser && (
+                            <span className="ml-2 px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded-full">
+                              Web Closer
+                            </span>
+                          )}
                         </h3>
                         <p className="text-sm text-gray-500">
                           ID: {user.id} {user.email && `• ${user.email}`}
@@ -205,6 +217,16 @@ export default function AdminPage() {
                       >
                         View Portal
                       </a>
+                      {user.webCloser && (
+                        <a
+                          href={`/web-closer/${user.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1 text-sm bg-purple-100 text-purple-700 rounded-md hover:bg-purple-200"
+                        >
+                          Leads Dashboard
+                        </a>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -220,7 +242,13 @@ export default function AdminPage() {
             onClick={(e) => {
               if (e.target === e.currentTarget) {
                 setShowCreateModal(false);
-                setNewUser({ id: "", name: "", email: "", password: "" });
+                setNewUser({
+                  id: "",
+                  name: "",
+                  email: "",
+                  password: "",
+                  webCloser: false,
+                });
               }
             }}
           >
@@ -297,13 +325,40 @@ export default function AdminPage() {
                     disabled={creating}
                   />
                 </div>
+
+                <div>
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newUser.webCloser}
+                      onChange={(e) =>
+                        setNewUser({ ...newUser, webCloser: e.target.checked })
+                      }
+                      className="mr-2 h-4 w-4"
+                      disabled={creating}
+                    />
+                    <span className="text-sm font-medium text-gray-700">
+                      Web Closer Role
+                    </span>
+                  </label>
+                  <p className="text-xs text-gray-500 mt-1 ml-6">
+                    Users with this role can receive passed businesses from
+                    other users
+                  </p>
+                </div>
               </div>
 
               <div className="flex justify-end space-x-2 mt-6">
                 <button
                   onClick={() => {
                     setShowCreateModal(false);
-                    setNewUser({ id: "", name: "", email: "", password: "" });
+                    setNewUser({
+                      id: "",
+                      name: "",
+                      email: "",
+                      password: "",
+                      webCloser: false,
+                    });
                   }}
                   className="px-4 py-2 border rounded-md hover:bg-gray-100"
                   disabled={creating}

@@ -26,6 +26,8 @@ import {
   ClipboardCopy,
   ImageOff,
   Copy,
+  Users,
+  ArrowRight,
 } from "lucide-react";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/clientApp";
@@ -79,9 +81,18 @@ export default function UserBusinessTable({
     pipelineStatus: "",
     hideNoPhone: true,
     hideNotQualified: false,
+    showOnlyPassed: false,
+    showOnlyNotPassed: false,
   });
   const [editingNotes, setEditingNotes] = useState(null);
   const [noteText, setNoteText] = useState("");
+
+  // Bulk selection state
+  const [selectedBusinesses, setSelectedBusinesses] = useState([]);
+  const [showWebCloserModal, setShowWebCloserModal] = useState(false);
+  const [webClosers, setWebClosers] = useState([]);
+  const [selectedWebCloser, setSelectedWebCloser] = useState("");
+  const [passingToWebCloser, setPassingToWebCloser] = useState(false);
 
   // Calculate unique categories dynamically
   const uniqueCategories = useMemo(() => {
@@ -114,10 +125,32 @@ export default function UserBusinessTable({
             ? user.preferences.defaultHideNoPhone
             : true,
         hideNotQualified: user.preferences.defaultHideNotQualified || false,
+        showOnlyPassed: false,
+        showOnlyNotPassed: false,
       };
       setLocalFilters(defaultFilters);
     }
   }, [user]);
+
+  // Fetch web closers when component mounts
+  useEffect(() => {
+    fetchWebClosers();
+  }, []);
+
+  // Function to fetch web closers
+  const fetchWebClosers = async () => {
+    try {
+      const response = await fetch("/api/getWebClosers");
+      const data = await response.json();
+      if (response.ok) {
+        setWebClosers(data.webClosers || []);
+      } else {
+        console.error("Failed to fetch web closers:", data.error);
+      }
+    } catch (error) {
+      console.error("Error fetching web closers:", error);
+    }
+  };
 
   // Function to extract area code from phone number
   const extractAreaCode = (phone) => {
@@ -211,12 +244,19 @@ export default function UserBusinessTable({
         !localFilters.hideNotQualified ||
         business.pipeline_status !== "Not Qualified";
 
+      // Filter for passed/not passed businesses
+      const matchesPassedFilter =
+        (!localFilters.showOnlyPassed && !localFilters.showOnlyNotPassed) ||
+        (localFilters.showOnlyPassed && business.passedTo) ||
+        (localFilters.showOnlyNotPassed && !business.passedTo);
+
       return (
         matchesCategory &&
         matchesWebsiteStatus &&
         matchesPipelineStatus &&
         matchesHideNoPhone &&
-        matchesHideNotQualified
+        matchesHideNotQualified &&
+        matchesPassedFilter
       );
     });
   }, [sortedBusinesses, localFilters]);
@@ -235,6 +275,84 @@ export default function UserBusinessTable({
   // Handle page change
   const handlePageChange = (page) => {
     setCurrentPage(page);
+  };
+
+  // Handle select all
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedBusinesses(paginatedBusinesses.map((business) => business.id));
+    } else {
+      setSelectedBusinesses([]);
+    }
+  };
+
+  // Handle select one
+  const handleSelectOne = (businessId) => {
+    if (selectedBusinesses.includes(businessId)) {
+      setSelectedBusinesses(
+        selectedBusinesses.filter((id) => id !== businessId)
+      );
+    } else {
+      setSelectedBusinesses([...selectedBusinesses, businessId]);
+    }
+  };
+
+  // Handle pass to web closer
+  const handlePassToWebCloser = async () => {
+    if (!selectedWebCloser || selectedBusinesses.length === 0) {
+      toast.error("Please select a web closer and businesses to pass.");
+      return;
+    }
+
+    setPassingToWebCloser(true);
+    const toastId = toast.loading(
+      `Passing ${selectedBusinesses.length} businesses to web closer...`
+    );
+
+    try {
+      const response = await fetch("/api/passToWebCloser", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fromUserId: user.id,
+          toWebCloserId: selectedWebCloser,
+          businessIds: selectedBusinesses,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        toast.success(data.message || "Businesses passed successfully", {
+          id: toastId,
+        });
+
+        // Update local state to reflect the passed businesses
+        selectedBusinesses.forEach((businessId) => {
+          const business = businesses.find((b) => b.id === businessId);
+          if (business) {
+            business.passedTo = selectedWebCloser;
+            business.passedBy = user.id;
+            business.passedAt = new Date();
+          }
+        });
+
+        setShowWebCloserModal(false);
+        setSelectedWebCloser("");
+        setSelectedBusinesses([]);
+      } else {
+        toast.error(data.error || "Failed to pass businesses", {
+          id: toastId,
+        });
+      }
+    } catch (error) {
+      console.error("Error passing businesses:", error);
+      toast.error("Failed to pass businesses", { id: toastId });
+    } finally {
+      setPassingToWebCloser(false);
+    }
   };
 
   // Handle pipeline status change
@@ -331,6 +449,8 @@ export default function UserBusinessTable({
       pipelineStatus: "",
       hideNoPhone: false,
       hideNotQualified: false,
+      showOnlyPassed: false,
+      showOnlyNotPassed: false,
     };
     setLocalFilters(emptyFilters);
     setShowFilters(false);
@@ -455,11 +575,40 @@ export default function UserBusinessTable({
         </div>
       </div>
 
+      {/* Bulk Actions Bar */}
+      {selectedBusinesses.length > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-md p-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-blue-800">
+              {selectedBusinesses.length} business
+              {selectedBusinesses.length !== 1 ? "es" : ""} selected
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSelectedBusinesses([])}
+              className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Clear Selection
+            </button>
+            {webClosers.length > 0 && (
+              <button
+                onClick={() => setShowWebCloserModal(true)}
+                className="flex items-center gap-1 px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+              >
+                <Users className="h-4 w-4" />
+                Pass to Web Closer
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Filters panel */}
       {showFilters && (
         <div className="bg-gray-50 p-4 rounded-md border mt-2 mb-4">
           <h3 className="font-medium mb-3">Filter Panel</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
             <div>
               <label className="block text-sm mb-1">Website Status</label>
               <select
@@ -505,6 +654,31 @@ export default function UserBusinessTable({
                   </option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-sm mb-1">Passed Status</label>
+              <div className="space-y-2">
+                <label className="flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="showOnlyPassed"
+                    checked={localFilters.showOnlyPassed || false}
+                    onChange={handleLocalFilterChange}
+                    className="mr-2 h-4 w-4"
+                  />
+                  <span className="text-sm">Show Only Passed</span>
+                </label>
+                <label className="flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="showOnlyNotPassed"
+                    checked={localFilters.showOnlyNotPassed || false}
+                    onChange={handleLocalFilterChange}
+                    className="mr-2 h-4 w-4"
+                  />
+                  <span className="text-sm">Show Only Not Passed</span>
+                </label>
+              </div>
             </div>
           </div>
           <div className="flex justify-end">
@@ -666,6 +840,17 @@ export default function UserBusinessTable({
         <table className="min-w-full divide-y divide-gray-200 text-sm">
           <thead className="bg-gray-50">
             <tr>
+              <th className="px-2 py-3 text-left w-12">
+                <input
+                  type="checkbox"
+                  checked={
+                    selectedBusinesses.length === paginatedBusinesses.length &&
+                    paginatedBusinesses.length > 0
+                  }
+                  onChange={handleSelectAll}
+                  className="h-4 w-4"
+                />
+              </th>
               <th className="px-2 py-3 text-left w-36">
                 <div className="flex items-center space-x-1">
                   <Phone className="h-4 w-4 text-gray-400" />
@@ -704,13 +889,14 @@ export default function UserBusinessTable({
                   {getSortIndicator("category")}
                 </div>
               </th>
+              <th className="px-2 py-3 text-left w-24">Status</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {loading ? (
               <tr>
                 <td
-                  colSpan="8"
+                  colSpan="10"
                   className="px-4 py-10 text-center text-gray-500"
                 >
                   Loading...
@@ -719,7 +905,7 @@ export default function UserBusinessTable({
             ) : paginatedBusinesses.length === 0 ? (
               <tr>
                 <td
-                  colSpan="8"
+                  colSpan="10"
                   className="px-4 py-10 text-center text-gray-500"
                 >
                   No businesses match the current filters
@@ -728,8 +914,24 @@ export default function UserBusinessTable({
             ) : (
               paginatedBusinesses.map((business) => {
                 const formattedPhone = formatPhoneNumberForTel(business.phone);
+                const isSelected = selectedBusinesses.includes(business.id);
+                const isPassed = !!business.passedTo;
+
                 return (
-                  <tr key={business.id} className="hover:bg-gray-50">
+                  <tr
+                    key={business.id}
+                    className={`hover:bg-gray-50 ${
+                      isPassed ? "bg-blue-50" : ""
+                    }`}
+                  >
+                    <td className="px-2 py-4">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleSelectOne(business.id)}
+                        className="h-4 w-4"
+                      />
+                    </td>
                     <td className="px-2 py-4">
                       <div className="flex items-center space-x-1 whitespace-nowrap">
                         {business.phone ? (
@@ -829,6 +1031,7 @@ export default function UserBusinessTable({
                           handleStatusChange(business.id, e.target.value)
                         }
                         className="p-1 text-xs border rounded bg-white w-full"
+                        disabled={isPassed}
                       >
                         {PIPELINE_STATUSES.map((status) => (
                           <option key={status} value={status}>
@@ -842,6 +1045,7 @@ export default function UserBusinessTable({
                         <button
                           onClick={() => handleEditNotes(business)}
                           className="flex items-center p-1 text-gray-500 hover:text-blue-600 rounded-full hover:bg-gray-100"
+                          disabled={isPassed}
                         >
                           <Edit className="h-4 w-4" />
                           <span className="ml-1 text-xs">
@@ -878,6 +1082,18 @@ export default function UserBusinessTable({
                       <div className="truncate max-w-[100px]">
                         {business.category}
                       </div>
+                    </td>
+                    <td className="px-2 py-4">
+                      {isPassed ? (
+                        <div className="flex items-center text-xs">
+                          <ArrowRight className="h-3 w-3 text-blue-600 mr-1" />
+                          <span className="text-blue-600 font-medium">
+                            Passed
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400 text-xs">Active</span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -1017,6 +1233,68 @@ export default function UserBusinessTable({
             >
               Last
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Web Closer Modal */}
+      {showWebCloserModal && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowWebCloserModal(false);
+              setSelectedWebCloser("");
+            }
+          }}
+        >
+          <div
+            className="bg-white p-6 rounded-lg shadow-lg w-full max-w-md"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-medium mb-4">Pass to Web Closer</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              You are about to pass {selectedBusinesses.length} selected
+              businesses to a web closer.
+            </p>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Select Web Closer
+              </label>
+              <select
+                value={selectedWebCloser}
+                onChange={(e) => setSelectedWebCloser(e.target.value)}
+                className="w-full p-2 border rounded-md"
+                disabled={passingToWebCloser}
+              >
+                <option value="">Choose a web closer...</option>
+                {webClosers.map((closer) => (
+                  <option key={closer.id} value={closer.id}>
+                    {closer.name || closer.id}{" "}
+                    {closer.email && `(${closer.email})`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex justify-end space-x-2">
+              <button
+                onClick={() => {
+                  setShowWebCloserModal(false);
+                  setSelectedWebCloser("");
+                }}
+                className="px-4 py-2 border rounded-md hover:bg-gray-100"
+                disabled={passingToWebCloser}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePassToWebCloser}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+                disabled={!selectedWebCloser || passingToWebCloser}
+              >
+                {passingToWebCloser ? "Passing..." : "Pass Businesses"}
+              </button>
+            </div>
           </div>
         </div>
       )}
