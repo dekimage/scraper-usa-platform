@@ -49,8 +49,15 @@ export default function UserPage() {
 
           if (hoursDiff < 24) {
             // 24 hour session
-            setUser(parsed.userData);
+            const userData = parsed.userData;
+            setUser(userData);
             setIsAuthenticated(true);
+
+            // Redirect web closers to their leads dashboard
+            if (userData.webCloser) {
+              router.push(`/web-closer/${userId}`);
+              return;
+            }
           } else {
             // Session expired
             localStorage.removeItem(`userAuth_${userId}`);
@@ -64,7 +71,7 @@ export default function UserPage() {
     };
 
     checkAuth();
-  }, [userId]);
+  }, [userId, router]);
 
   // Fetch user's categories when authenticated
   useEffect(() => {
@@ -183,6 +190,11 @@ export default function UserPage() {
   const handleLoginSuccess = (userData) => {
     setUser(userData);
     setIsAuthenticated(true);
+
+    // Redirect web closers to their leads dashboard
+    if (userData.webCloser) {
+      router.push(`/web-closer/${userId}`);
+    }
   };
 
   // Handle logout
