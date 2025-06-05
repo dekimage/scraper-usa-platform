@@ -37,14 +37,26 @@ import { recordPipelineStatusChange } from "../firebase/analyticsTracker";
 
 // Pipeline status options & styling
 const PIPELINE_STATUSES_CONFIG = {
-  "Not Contacted": { color: "gray", icon: UserX },
-  Contacted: { color: "blue", icon: Send },
-  "Waiting Response": { color: "orange", icon: Clock },
-  "No Answer": { color: "yellow", icon: PhoneOff },
-  "Action Required": { color: "purple", icon: RefreshCw },
-  "Closed / Won": { color: "green", icon: CheckCircle },
-  "Rejected / Not Interested": { color: "red", icon: ThumbsDown },
-  "Not Qualified": { color: "purple", icon: Slash },
+  "Not Contacted": { color: "gray", icon: UserX, bgColor: "bg-white" },
+  Contacted: { color: "blue", icon: Send, bgColor: "bg-green-50" },
+  "Waiting Response": { color: "orange", icon: Clock, bgColor: "bg-blue-50" },
+  "No Answer": { color: "yellow", icon: PhoneOff, bgColor: "bg-purple-50" },
+  "Action Required": {
+    color: "purple",
+    icon: RefreshCw,
+    bgColor: "bg-yellow-50",
+  },
+  "Closed / Won": {
+    color: "green",
+    icon: CheckCircle,
+    bgColor: "bg-green-100",
+  },
+  "Rejected / Not Interested": {
+    color: "red",
+    icon: ThumbsDown,
+    bgColor: "bg-red-50",
+  },
+  "Not Qualified": { color: "purple", icon: Slash, bgColor: "bg-white" },
 };
 const PIPELINE_STATUSES = Object.keys(PIPELINE_STATUSES_CONFIG);
 
@@ -91,6 +103,7 @@ export default function BusinessTable({
   const [availableUsers, setAvailableUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState("");
   const [assigningToUser, setAssigningToUser] = useState(false);
+  const [forceRender, setForceRender] = useState(0); // Force re-render state
 
   // Update local filters if the parent filters change (e.g., city change, reset)
   useEffect(() => {
@@ -232,14 +245,22 @@ export default function BusinessTable({
   // Handle pipeline status change (Single Business)
   const handleStatusChange = async (businessId, status) => {
     const toastId = toast.loading(`Updating status to "${status}"...`);
-    try {
-      // Find the business data for analytics tracking
-      const business = businesses.find((b) => b.id === businessId);
-      if (!business) {
-        throw new Error("Business not found");
-      }
 
-      const previousStatus = business.pipeline_status || "Not Contacted";
+    // Find the business data for analytics tracking
+    const business = businesses.find((b) => b.id === businessId);
+    if (!business) {
+      toast.error("Business not found", { id: toastId });
+      return;
+    }
+
+    const previousStatus = business.pipeline_status || "Not Contacted";
+
+    try {
+      // Update the local business in-memory FIRST for instant UI update
+      business.pipeline_status = status;
+
+      // Force React to re-render by updating dummy state
+      setForceRender((prev) => prev + 1);
 
       // Only track analytics if status actually changed
       if (previousStatus !== status) {
@@ -253,18 +274,21 @@ export default function BusinessTable({
         });
       }
 
+      // Update Firebase in the background
       await updateDoc(doc(db, "businesses", businessId), {
         pipeline_status: status,
       });
 
-      // Update the local business in-memory instead of refreshing all data
-      business.pipeline_status = status;
-
       toast.success(`Updated status to "${status}"`, { id: toastId });
-      // Do NOT call onRefresh() - instead React will re-render with the updated object
     } catch (error) {
       console.error("Error updating status:", error);
       toast.error("Failed to update status", { id: toastId });
+
+      // Revert the local change if Firebase update failed
+      business.pipeline_status = previousStatus;
+
+      // Force another re-render to show the reverted state
+      setForceRender((prev) => prev + 1);
     }
   };
 
@@ -277,15 +301,34 @@ export default function BusinessTable({
     const toastId = toast.loading(
       `Updating ${selectedBusinesses.length} businesses...`
     );
+
+    // Get the selected businesses data for analytics tracking
+    const selectedBusinessesData = businesses.filter((b) =>
+      selectedBusinesses.includes(b.id)
+    );
+
+    // Store previous statuses for potential rollback
+    const previousStatuses = selectedBusinessesData.map((business) => ({
+      id: business.id,
+      previousStatus: business.pipeline_status || "Not Contacted",
+    }));
+
     try {
-      // Get the selected businesses data for analytics tracking
-      const selectedBusinessesData = businesses.filter((b) =>
-        selectedBusinesses.includes(b.id)
-      );
+      // Update statuses in local state FIRST for instant UI update
+      selectedBusinessesData.forEach((business) => {
+        business.pipeline_status = status;
+      });
+
+      // Force React to re-render by updating dummy state
+      setForceRender((prev) => prev + 1);
 
       const updatePromises = selectedBusinessesData.map((business) => {
-        // Track analytics for each business
-        const previousStatus = business.pipeline_status || "Not Contacted";
+        const previousStatusObj = previousStatuses.find(
+          (p) => p.id === business.id
+        );
+        const previousStatus = previousStatusObj
+          ? previousStatusObj.previousStatus
+          : "Not Contacted";
 
         // Only track if status actually changed
         if (previousStatus !== status) {
@@ -307,11 +350,6 @@ export default function BusinessTable({
 
       await Promise.all(updatePromises);
 
-      // Update statuses in local state instead of refreshing
-      selectedBusinessesData.forEach((business) => {
-        business.pipeline_status = status;
-      });
-
       toast.success(
         `Updated ${selectedBusinesses.length} businesses to "${status}"`,
         { id: toastId }
@@ -321,6 +359,19 @@ export default function BusinessTable({
     } catch (error) {
       console.error("Error bulk updating businesses:", error);
       toast.error("Failed to update businesses", { id: toastId });
+
+      // Revert the local changes if Firebase update failed
+      selectedBusinessesData.forEach((business) => {
+        const previousStatusObj = previousStatuses.find(
+          (p) => p.id === business.id
+        );
+        business.pipeline_status = previousStatusObj
+          ? previousStatusObj.previousStatus
+          : "Not Contacted";
+      });
+
+      // Force another re-render to show the reverted state
+      setForceRender((prev) => prev + 1);
     }
   };
 
@@ -557,6 +608,19 @@ export default function BusinessTable({
 
     // Call parent function to update the default filter in database
     onSetDefaultWebsiteFilter(filterValue);
+  };
+
+  // Helper to get pipeline status background color
+  const getStatusBgColor = (status) => {
+    return PIPELINE_STATUSES_CONFIG[status]?.bgColor || "bg-white";
+  };
+
+  // Helper to generate Google business profile URL
+  const generateGoogleBusinessUrl = (businessName, city, address) => {
+    const searchQuery = encodeURIComponent(
+      `${businessName} ${city || ""} ${address || ""}`.trim()
+    );
+    return `https://www.google.com/search?q=${searchQuery}`;
   };
 
   return (
@@ -969,8 +1033,14 @@ export default function BusinessTable({
             ) : (
               paginatedBusinesses.map((business) => {
                 const formattedPhone = formatPhoneNumberForTel(business.phone);
+                const rowBgColor = getStatusBgColor(
+                  business.pipeline_status || "Not Contacted"
+                );
                 return (
-                  <tr key={business.id} className="hover:bg-gray-50">
+                  <tr
+                    key={business.id}
+                    className={`hover:bg-gray-50 ${rowBgColor}`}
+                  >
                     <td className="px-4 py-4 w-12">
                       <input
                         type="checkbox"
@@ -1087,12 +1157,20 @@ export default function BusinessTable({
                         >
                           <Copy className="h-3.5 w-3.5" />
                         </button>
-                        <span
-                          title={business.name}
-                          className="truncate max-w-[100px]"
+                        <a
+                          href={generateGoogleBusinessUrl(
+                            business.name,
+                            business.city,
+                            business.address
+                          )}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={`Search ${business.name} on Google`}
+                          className="truncate max-w-[100px] text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                          onClick={(e) => e.stopPropagation()}
                         >
                           {business.name}
-                        </span>
+                        </a>
                       </div>
                     </td>
                     <td className="px-2 py-4">
