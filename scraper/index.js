@@ -2,6 +2,7 @@ const { chromium } = require("playwright");
 const { randomDelay } = require("./utils/delays");
 const { getRandomUserAgent } = require("./utils/userAgents");
 const { checkWebsiteType } = require("./utils/websiteChecker");
+const { normalizeScrapedWebsiteUrl } = require("../lib/websiteUrl");
 const {
   saveBusiness,
   exportToCSV,
@@ -34,8 +35,15 @@ async function scrapeGoogleMaps(options = {}) {
   );
   console.log(`Max results: ${settings.maxResults}`);
 
+  const headless =
+    process.env.PLAYWRIGHT_HEADLESS === "1" ||
+    process.env.PLAYWRIGHT_HEADLESS === "true";
+  console.log(
+    `Launching Chromium (headless=${headless})… If this hangs, run: npx playwright install chromium`
+  );
+
   const browser = await chromium.launch({
-    headless: false, // Set to true for production
+    headless,
     args: ["--lang=en-US"], // Force browser language
   });
 
@@ -125,66 +133,86 @@ async function scrapeGoogleMaps(options = {}) {
 
     // --- Process each result (up to maxResults) ---
     const maxToProcess = settings.maxResults;
-    let resultsProcessedInFeed = 0; // Track how many we looked at in the feed
+    let resultsProcessedInFeed = 0; // list row index
     let continueProcessing = true;
 
-    // Loop while we haven't hit max results AND there are potentially more items to check
     while (scrapedBusinesses.length < maxToProcess && continueProcessing) {
-      // <<< Re-evaluate the list of result DIVs *inside* the loop >>>
-      const currentResultDivs = feedLocator.locator("> div"); // Direct children divs
-      const countOnPage = await currentResultDivs.count();
+      const currentResultDivs = feedLocator.locator("> div");
+      let countOnPage = await currentResultDivs.count();
 
-      // Check if we've processed all available items in the current view
-      if (resultsProcessedInFeed >= countOnPage) {
+      // Load more list rows in the same search (infinite scroll) before giving up
+      let scrollTries = 0;
+      while (resultsProcessedInFeed >= countOnPage && continueProcessing) {
+        const before = countOnPage;
+        const feedEl = await page.$('div[role="feed"]');
+        if (feedEl) {
+          await feedEl.evaluate((feed) => {
+            feed.scrollTop = feed.scrollHeight;
+          });
+        }
+        await randomDelay(2000, 3500);
+        countOnPage = await currentResultDivs.count();
+        scrollTries += 1;
         console.log(
-          `Processed all ${countOnPage} items currently visible in feed. Stopping.`
+          `After scroll: ${countOnPage} feed rows (need index ${resultsProcessedInFeed}), try ${scrollTries}`
         );
-        continueProcessing = false; // Exit the while loop
+        if (countOnPage > before) break;
+        if (scrollTries >= 4) {
+          console.log("No new rows after scrolling; no more map results to load.");
+          continueProcessing = false;
+          break;
+        }
+      }
+      if (!continueProcessing) break;
+      if (resultsProcessedInFeed >= countOnPage) {
+        continueProcessing = false;
         break;
       }
 
-      // Get the locator for the NEXT item to process based on index
+      // Must be on the search results list, not a place detail URL from last visit
+      await returnToSearchResultsList(page);
+
       const resultDivLocator = currentResultDivs.nth(resultsProcessedInFeed);
       const itemIndexForLog = resultsProcessedInFeed + 1;
 
       try {
         console.log(
-          `Processing result ${itemIndexForLog} (Scraped: ${scrapedBusinesses.length}/${maxToProcess})...`
+          `Processing result ${itemIndexForLog} (saved ${scrapedBusinesses.length}/${maxToProcess}, ${countOnPage} in feed)...`
         );
 
-        // --- Robust Click Strategy (using resultDivLocator) ---
+        await resultDivLocator
+          .scrollIntoViewIfNeeded()
+          .catch(() => {});
+
         let clickSuccessful = false;
         const potentialClickTargets = [
-          resultDivLocator.locator("a.hfpxzc").first(), // Specific link if available
-          resultDivLocator, // Fallback to the whole div
+          resultDivLocator.locator("a.hfpxzc").first(),
+          resultDivLocator,
         ];
         const initialUrl = page.url();
 
         for (const targetLocator of potentialClickTargets) {
           try {
-            // Check visibility before clicking
             await targetLocator.waitFor({ state: "visible", timeout: 5000 });
-            await targetLocator.click({ timeout: 5000 }); // Try clicking
+            await targetLocator.click({ timeout: 5000 });
 
-            // More robust wait: Check for URL change *and* address button presence
             await page.waitForFunction(
               (initial) =>
                 window.location.href !== initial &&
                 window.location.href.includes("/maps/place/"),
               initialUrl,
-              { timeout: 7000 }
+              { timeout: 10000 }
             );
             await page
               .locator('button[data-item-id="address"]')
               .first()
-              .waitFor({ state: "visible", timeout: 7000 });
+              .waitFor({ state: "visible", timeout: 10000 });
 
             clickSuccessful = true;
             console.log("Click and navigation successful.");
-            break; // Exit click attempts
+            break;
           } catch (clickError) {
-            // console.log(`Click attempt failed: ${clickError.message}`);
-            // Try next target or fail
+            // try next target
           }
         }
 
@@ -192,59 +220,46 @@ async function scrapeGoogleMaps(options = {}) {
           console.log(
             `Failed to click and navigate for result ${itemIndexForLog}. Skipping.`
           );
-          resultsProcessedInFeed++; // <<< IMPORTANT: Increment index even on failure >>>
-          continue; // Skip to the next iteration of the while loop
-        }
-
-        // --- Wait for Details Panel (already checked address button) ---
-        try {
-          await page
-            .locator("h1")
-            .first()
-            .waitFor({ state: "visible", timeout: 5000 });
-          console.log("Key details panel elements visible.");
-        } catch (waitError) {
-          console.log(
-            `Timeout waiting for H1 after navigation for result ${itemIndexForLog}. Skipping.`
-          );
-          resultsProcessedInFeed++; // <<< Increment index >>>
-          continue;
-        }
-
-        // Extract business data
-        const businessData = await extractBusinessData(page, settings);
-
-        if (businessData) {
-          const saveResult = await saveBusiness(businessData);
-          if (saveResult.success) {
-            scrapedBusinesses.push(businessData);
+        } else {
+          try {
+            await page
+              .locator("h1")
+              .first()
+              .waitFor({ state: "visible", timeout: 5000 });
+            console.log("Key details panel elements visible.");
+          } catch (waitError) {
             console.log(
-              `Saved business #${scrapedBusinesses.length}: ${businessData.name}`
+              `Timeout waiting for H1 after navigation for result ${itemIndexForLog}. Skipping.`
             );
-            // <<< Only increment scraped count on SUCCESS >>>
-          } else if (saveResult.reason === "duplicate") {
-            console.log(`Skipped duplicate business: ${businessData.name}`);
+            resultsProcessedInFeed += 1;
+            await randomDelay(500, 1000);
+            continue;
           }
-        }
 
-        // Random delay
-        await randomDelay(settings.minDelay, settings.maxDelay);
+          const businessData = await extractBusinessData(page, settings);
+
+          if (businessData) {
+            const saveResult = await saveBusiness(businessData);
+            if (saveResult.success) {
+              scrapedBusinesses.push(businessData);
+              console.log(
+                `Saved business #${scrapedBusinesses.length}: ${businessData.name}`
+              );
+            } else if (saveResult.reason === "duplicate") {
+              console.log(`Skipped duplicate business: ${businessData.name}`);
+            }
+          }
+
+          await randomDelay(settings.minDelay, settings.maxDelay);
+        }
       } catch (error) {
         console.error(`Error processing result ${itemIndexForLog}:`, error);
-        // Continue with next result even after error
         await randomDelay(1000, 2000);
+      } finally {
+        await returnToSearchResultsList(page);
       }
 
-      // <<< Increment the index for the next item in the feed >>>
-      resultsProcessedInFeed++;
-
-      // <<< Optional: Go back to search results? Sometimes needed, sometimes not. >>>
-      // If clicks consistently fail after the first few, uncommenting this might help,
-      // but it slows things down significantly.
-      // console.log('Navigating back to results page (may be slow)...');
-      // await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 });
-      // await feedLocator.waitFor({ state: 'visible', timeout: 15000 }); // Wait for feed to reappear
-      // await randomDelay(1000, 2000);
+      resultsProcessedInFeed += 1;
     } // End of while loop
 
     console.log(
@@ -384,8 +399,9 @@ async function extractBusinessData(page, settings) {
         .locator('a[data-item-id="authority"]')
         .first();
       await websiteLocator.waitFor({ state: "visible", timeout: 5000 });
-      businessDetails.website = await websiteLocator.getAttribute("href");
-      console.log(`  [Website] Found (link): '${businessDetails.website}'`);
+      const rawWebsiteHref = await websiteLocator.getAttribute("href");
+      businessDetails.website = normalizeScrapedWebsiteUrl(rawWebsiteHref) || null;
+      console.log(`  [Website] Found (raw): '${rawWebsiteHref}' → ${businessDetails.website || "null"}`);
     } catch (e) {
       console.log("  [Website] Link selector failed. Trying text button...");
       // Check for "Add website" button or plain text if link fails
@@ -414,6 +430,10 @@ async function extractBusinessData(page, settings) {
       } catch (e2) {
         console.log("  [Website] Text button selector failed.");
       }
+    }
+    if (businessDetails.website) {
+      const n = normalizeScrapedWebsiteUrl(businessDetails.website);
+      if (n) businessDetails.website = n;
     }
     // Update status based on final website value
     businessDetails.website_status = checkWebsiteType(businessDetails.website);
@@ -459,41 +479,67 @@ async function extractBusinessData(page, settings) {
       console.log("  [Reviews] Selector failed.");
     }
 
-    // IMAGE URL
+    // IMAGE URL (GMaps often uses lh3, lh4, etc.; avoid map UI sprites)
     console.log("Attempting to extract: IMAGE URL");
-    try {
-      // Selector for the main image shown in the details panel
-      // This often involves a button wrapper around the image
-      // const imageLocator = page
-      //   .locator('button[jsaction*="imagery"] img')
-      //   .first();
-      const imageLocator = page
-        .locator('button[aria-label^="Photo of"] img')
-        .first();
-      await imageLocator.waitFor({ state: "visible", timeout: 5000 });
-      businessDetails.imageUrl = await imageLocator.getAttribute("src");
-      // Often Google Maps URLs are very long, check if it looks like a valid image URL
-      if (
-        businessDetails.imageUrl &&
-        businessDetails.imageUrl.startsWith(
-          "https://lh5.googleusercontent.com/"
-        )
-      ) {
-        console.log(
-          `  [Image URL] Found: ${businessDetails.imageUrl.substring(0, 60)}...`
-        ); // Log truncated URL
-      } else {
-        console.log(
-          "  [Image URL] Found src attribute, but doesn't look like a standard Google User Content URL. Using anyway."
-        );
-        if (!businessDetails.imageUrl?.startsWith("http")) {
-          console.log("  [Image URL] Invalid src extracted, setting to null");
-          businessDetails.imageUrl = null; // Discard if clearly not a URL
-        }
+    const isBusinessPhotoUrl = (src) => {
+      if (!src || !src.startsWith("http")) return false;
+      if (src.includes("gstatic.com")) return false;
+      if (src.includes("/maps/vt/") || src.includes("pin") || src.includes("icons")) {
+        return false;
       }
+      return src.includes("googleusercontent.com") || src.includes("ggpht.com");
+    };
+    const imageCandidateSelectors = [
+      'button[aria-label^="Photo of"] img',
+      'div[role="main"] button img',
+      'div[role="main"] button img[data-src], div[role="main"] button img[src*="google"]',
+    ];
+    let chosen = null;
+    try {
+      const byLabel = page.getByLabel(/Photo of/i).locator("img").first();
+      await byLabel.waitFor({ state: "visible", timeout: 2000 });
+      const s = (await byLabel.getAttribute("src")) || (await byLabel.getAttribute("data-src"));
+      if (isBusinessPhotoUrl(s)) chosen = s;
     } catch (e) {
-      console.log("  [Image URL] Selector failed.");
-      businessDetails.imageUrl = null; // Ensure it's null if not found
+      /* */
+    }
+    for (const sel of imageCandidateSelectors) {
+      if (chosen) break;
+      try {
+        const loc = page.locator(sel).first();
+        await loc.waitFor({ state: "visible", timeout: 2000 });
+        const src = (await loc.getAttribute("src")) || (await loc.getAttribute("data-src"));
+        if (isBusinessPhotoUrl(src)) {
+          chosen = src;
+          break;
+        }
+      } catch (e) {
+        /* try next */
+      }
+    }
+    if (!chosen) {
+      try {
+        const all = page.locator('div[role="main"] img');
+        const n = await all.count();
+        for (let i = 0; i < n && i < 12; i++) {
+          const src = await all.nth(i).getAttribute("src");
+          if (isBusinessPhotoUrl(src)) {
+            chosen = src;
+            break;
+          }
+        }
+      } catch (e) {
+        /* */
+      }
+    }
+    if (chosen) {
+      businessDetails.imageUrl = chosen;
+      console.log(
+        `  [Image URL] ${chosen.substring(0, Math.min(80, chosen.length))}...`
+      );
+    } else {
+      businessDetails.imageUrl = null;
+      console.log("  [Image URL] No suitable photo in panel.");
     }
 
     console.log("--- Finished Data Extraction ---");
@@ -502,6 +548,36 @@ async function extractBusinessData(page, settings) {
     console.error(`Error extracting business data for ${page.url()}:`, error);
     return null;
   }
+}
+
+/**
+ * Return from a place page to the search results so the list can be clicked again.
+ */
+async function returnToSearchResultsList(page) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!String(page.url()).includes("/maps/place/")) {
+      try {
+        await page
+          .locator('div[role="feed"]')
+          .first()
+          .waitFor({ state: "visible", timeout: 5000 });
+      } catch (e) {
+        /* some layouts still have feed */
+      }
+      return;
+    }
+    try {
+      await page.goBack({ waitUntil: "domcontentloaded", timeout: 20000 });
+      await page
+        .locator('div[role="feed"]')
+        .first()
+        .waitFor({ state: "visible", timeout: 15000 });
+    } catch (e) {
+      console.log("returnToSearchResultsList goBack issue:", e.message);
+      return;
+    }
+  }
+  await randomDelay(400, 900);
 }
 
 module.exports = {

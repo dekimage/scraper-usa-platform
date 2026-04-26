@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { normalizeScrapedWebsiteUrl } from "../lib/websiteUrl";
 import {
   ExternalLink,
   Edit,
@@ -914,6 +915,11 @@ export default function UserBusinessTable({
             ) : (
               paginatedBusinesses.map((business) => {
                 const formattedPhone = formatPhoneNumberForTel(business.phone);
+                const displayWebsite =
+                  normalizeScrapedWebsiteUrl(business.website) ||
+                  business.website;
+                const websiteCanOpen =
+                  displayWebsite && /^https?:\/\//i.test(displayWebsite);
                 const isSelected = selectedBusinesses.includes(business.id);
                 const isPassed = !!business.passedTo;
 
@@ -991,9 +997,9 @@ export default function UserBusinessTable({
                       )}
                       {business.website_status === "facebook/instagram" && (
                         <span className="p-1.5 inline-flex items-center justify-center rounded-md bg-yellow-100 text-yellow-700">
-                          {business.website?.includes("facebook") ? (
+                          {displayWebsite?.includes("facebook") ? (
                             <Facebook className="h-4 w-4" />
-                          ) : business.website?.includes("instagram") ? (
+                          ) : displayWebsite?.includes("instagram") ? (
                             <Instagram className="h-4 w-4" />
                           ) : (
                             <Share2 className="h-4 w-4" />
@@ -1057,17 +1063,17 @@ export default function UserBusinessTable({
                     <td className="px-4 py-4">
                       {(business.website_status === "real" ||
                         business.website_status === "facebook/instagram") &&
-                      business.website ? (
+                      websiteCanOpen ? (
                         <a
-                          href={business.website}
+                          href={displayWebsite}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center text-blue-600 hover:underline"
                         >
                           <span className="mr-1 truncate max-w-[150px]">
-                            {business.website.length > 25
-                              ? `${business.website.substring(0, 25)}...`
-                              : business.website}
+                            {displayWebsite.length > 25
+                              ? `${displayWebsite.substring(0, 25)}...`
+                              : displayWebsite}
                           </span>
                           <ExternalLink className="h-3 w-3 flex-shrink-0" />
                         </a>

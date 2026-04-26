@@ -19,6 +19,7 @@ import {
   limit,
 } from "firebase/firestore";
 import { db } from "../firebase/clientApp";
+import { normalizeScrapedWebsiteUrl } from "../lib/websiteUrl";
 import CityLoginForm from "../components/CityLoginForm";
 
 // Components
@@ -507,6 +508,23 @@ export default function BusinessesPage() {
     setFilters(newFilters);
   };
 
+  // Aligned with BusinessTable: WEBSITE_STATUS_DISPLAY + filter chip colors (green/yellow/red)
+  const websiteTypeByStatus = {
+    none: "No Website",
+    "facebook/instagram": "Social Media Only",
+    real: "Real Website",
+  };
+  const indicatorColorByStatus = {
+    none: "Green",
+    "facebook/instagram": "Yellow",
+    real: "Red",
+  };
+
+  const escapeCsvCell = (val) => {
+    const s = val == null ? "" : String(val);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+
   // Function to handle CSV download
   const handleDownloadCSV = () => {
     if (filteredBusinesses.length === 0) {
@@ -514,48 +532,59 @@ export default function BusinessesPage() {
       return;
     }
 
-    // Define CSV headers
+    // Core lead data + maps + website classification (no pipeline/notes/performance)
     const headers = [
       "Name",
       "Category",
       "Address",
       "Phone",
-      "Website",
-      "Website Status",
-      "Pipeline Status",
-      "Notes",
+      "Rating",
+      "Review Count",
+      "Website URL",
+      "Website Status Code",
+      "Website Type",
+      "Indicator Color",
+      "Google Maps Image URL",
+      "Google Maps Link",
+      "City",
       "Added Date",
-      "Performance Score",
-      "Performance Checked Date",
     ];
 
     // Convert business data to CSV rows
-    const csvRows = filteredBusinesses.map((business) =>
-      [
-        `"${business.name || ""}"`, // Enclose in quotes to handle commas
-        `"${business.category || ""}"`,
-        `"${business.address || ""}"`,
-        `"${business.phone || ""}"`,
-        `"${business.website || ""}"`,
-        `"${business.website_status || ""}"`,
-        `"${business.pipeline_status || ""}"`,
-        `"${(business.notes || "").replace(/"/g, '""')}"`, // Escape double quotes within notes
-        `"${
+    const csvRows = filteredBusinesses.map((business) => {
+      const code = business.website_status || "";
+      return [
+        escapeCsvCell(business.name),
+        escapeCsvCell(business.category),
+        escapeCsvCell(business.address),
+        escapeCsvCell(business.phone),
+        escapeCsvCell(
+          business.rating != null && business.rating !== "" ? business.rating : ""
+        ),
+        escapeCsvCell(
+          business.reviews != null && business.reviews !== ""
+            ? business.reviews
+            : ""
+        ),
+        escapeCsvCell(
+          normalizeScrapedWebsiteUrl(business.website) || business.website
+        ),
+        escapeCsvCell(code),
+        escapeCsvCell(websiteTypeByStatus[code] || ""),
+        escapeCsvCell(indicatorColorByStatus[code] || ""),
+        escapeCsvCell(business.imageUrl),
+        escapeCsvCell(business.maps_link),
+        escapeCsvCell(business.city),
+        escapeCsvCell(
           business.added_date?.toDate
             ? business.added_date.toDate().toLocaleDateString()
             : business.added_date || ""
-        }"`, // Format Firestore Timestamp
-        `"${business.performance_score ?? ""}"`, // Use nullish coalescing
-        `"${
-          business.performance_checked_date?.toDate
-            ? business.performance_checked_date.toDate().toLocaleDateString()
-            : business.performance_checked_date || ""
-        }"`, // Format Firestore Timestamp
-      ].join(",")
-    );
+        ),
+      ].join(",");
+    });
 
-    // Combine headers and rows
-    const csvString = [headers.join(","), ...csvRows].join("\n");
+    // UTF-8 BOM so Excel opens special characters correctly
+    const csvString = "\uFEFF" + [headers.join(","), ...csvRows].join("\n");
 
     // Create a Blob and trigger download
     const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
